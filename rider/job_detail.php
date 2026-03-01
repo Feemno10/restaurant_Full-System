@@ -2,7 +2,7 @@
 // ไฟล์: rider/job_detail.php
 session_start();
 
-// 1. ตรวจสอบสิทธิ์ (Security)
+// 1. ตรวจสอบสิทธิ์
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'rider') {
     header("Location: ../login.php");
     exit();
@@ -11,7 +11,6 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'rider') {
 require_once '../config/database.php';
 $user_id = $_SESSION['user_id'];
 
-// ตรวจสอบ Order ID
 if (!isset($_GET['order_id']) || empty($_GET['order_id'])) {
     header("Location: index.php");
     exit();
@@ -19,7 +18,7 @@ if (!isset($_GET['order_id']) || empty($_GET['order_id'])) {
 $order_id = $_GET['order_id'];
 
 try {
-    // 2. ดึงข้อมูลออเดอร์ ข้อมูลร้าน และข้อมูลลูกค้า
+    // 2. ดึงข้อมูลออเดอร์ ข้อมูลร้าน และข้อมูลลูกค้า (o.* จะดึง delivery_address และ payment_method มาด้วย)
     $stmt = $conn->prepare("
         SELECT o.*, 
                r.restaurant_name, r.address as res_addr,
@@ -36,7 +35,7 @@ try {
         die("ไม่พบข้อมูลงานนี้ หรือคุณไม่มีสิทธิ์เข้าถึงครับ");
     }
 
-    // 3. ดึงรายการอาหารในออเดอร์นี้
+    // 3. ดึงรายการอาหาร
     $stmt_items = $conn->prepare("
         SELECT od.*, f.food_name 
         FROM order_details od
@@ -92,38 +91,75 @@ try {
         <div class="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100 relative overflow-hidden">
             <div class="absolute -top-4 -right-4 opacity-5 text-6xl text-emerald-500"><i class="bi bi-shop"></i></div>
             <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
-                <i class="bi bi-geo-alt-fill text-emerald-500"></i> จุดรับอาหาร (ร้านค้า)
+                <i class="bi bi-geo-alt-fill text-emerald-500"></i> 1. จุดรับอาหาร (ร้านค้า)
             </h3>
             <p class="text-lg font-bold text-slate-800"><?= htmlspecialchars($job['restaurant_name']); ?></p>
             <p class="text-sm text-slate-500 mt-1"><?= htmlspecialchars($job['res_addr']); ?></p>
         </div>
 
-        <div class="bg-slate-900 p-8 rounded-[2rem] shadow-xl text-white relative overflow-hidden">
+        <div class="bg-slate-900 p-6 rounded-[2rem] shadow-xl text-white relative overflow-hidden">
             <div class="absolute -top-4 -right-4 opacity-10 text-6xl"><i class="bi bi-house-door-fill"></i></div>
+            
             <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
-                <i class="bi bi-geo-fill text-emerald-400"></i> จุดส่งอาหาร (ลูกค้า)
+                <i class="bi bi-geo-fill text-emerald-400"></i> 2. จุดส่งอาหาร (ลูกค้า)
             </h3>
+            
             <p class="text-xl font-black mb-1"><?= htmlspecialchars($job['first_name'].' '.$job['last_name']); ?></p>
-            <p class="text-emerald-400 font-bold mb-4"><i class="bi bi-telephone"></i> <?= htmlspecialchars($job['cus_phone']); ?></p>
-            <div class="bg-white/10 p-4 rounded-2xl flex items-center gap-3">
-                <i class="bi bi-cash-coin text-2xl text-emerald-400"></i>
-                <div>
-                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">ยอดเงินที่ต้องเก็บสุทธิ</p>
-                    <p class="text-xl font-black">฿<?= number_format($job['net_price'], 2); ?></p>
+            <p class="text-emerald-400 font-bold mb-4">
+                <i class="bi bi-telephone-fill"></i> 
+                <a href="tel:<?= htmlspecialchars($job['delivery_phone'] ?? $job['cus_phone']); ?>" class="hover:underline">
+                    <?= htmlspecialchars($job['delivery_phone'] ?? $job['cus_phone']); ?>
+                </a>
+            </p>
+
+            <div class="mb-5 bg-white/5 p-4 rounded-2xl border border-white/10">
+                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2"><i class="bi bi-signpost-2-fill"></i> ที่อยู่จัดส่งแบบละเอียด</p>
+                <p class="text-sm leading-relaxed text-slate-200">
+                    <?= !empty($job['delivery_address']) ? nl2br(htmlspecialchars($job['delivery_address'])) : '<span class="text-rose-400">ไม่ได้ระบุที่อยู่ (กรุณาโทรสอบถามลูกค้า)</span>'; ?>
+                </p>
+            </div>
+
+            <div class="bg-white/10 p-4 rounded-2xl flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <?php if($job['payment_method'] === 'cash'): ?>
+                        <div class="bg-emerald-500/20 p-2 rounded-xl text-emerald-400"><i class="bi bi-cash-stack text-2xl"></i></div>
+                        <div>
+                            <p class="text-[10px] font-bold text-emerald-300 uppercase tracking-widest">ต้องเก็บเงินลูกค้า</p>
+                            <p class="text-xl font-black text-white">฿<?= number_format($job['net_price'], 2); ?></p>
+                        </div>
+                    <?php else: ?>
+                        <div class="bg-blue-500/20 p-2 rounded-xl text-blue-400"><i class="bi bi-check-circle-fill text-2xl"></i></div>
+                        <div>
+                            <p class="text-[10px] font-bold text-blue-300 uppercase tracking-widest">สถานะการชำระเงิน</p>
+                            <p class="text-lg font-bold text-white">ชำระเงินแล้ว</p>
+                        </div>
+                    <?php endif; ?>
+                </div>
+
+                <div class="text-right">
+                    <span class="text-[9px] font-bold uppercase tracking-widest text-slate-400 block mb-1">ช่องทาง</span>
+                    <span class="bg-slate-800 border border-slate-700 px-3 py-1 rounded-full text-xs font-bold text-slate-300">
+                        <?php 
+                            if($job['payment_method'] == 'cash') echo 'เงินสด';
+                            elseif($job['payment_method'] == 'promptpay') echo 'โอนเงิน';
+                            elseif($job['payment_method'] == 'credit_card') echo 'บัตรเครดิต';
+                            else echo 'เงินสด';
+                        ?>
+                    </span>
                 </div>
             </div>
         </div>
 
         <div class="bg-white rounded-[2rem] shadow-sm border border-slate-100 overflow-hidden">
             <div class="p-4 bg-slate-50 border-b border-slate-100">
-                <h4 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">รายการอาหารที่สั่ง</h4>
+                <h4 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">รายการอาหารที่ต้องตรวจสอบ</h4>
             </div>
             <div class="p-6">
                 <ul class="space-y-4">
                     <?php foreach ($items as $item): ?>
                     <li class="flex justify-between items-center text-sm">
                         <span class="text-slate-600 font-medium">
-                            <span class="font-bold text-emerald-500 mr-2"><?= $item['quantity']; ?>x</span> 
+                            <span class="font-bold text-emerald-500 mr-2 bg-emerald-50 px-2 py-1 rounded-lg"><?= $item['quantity']; ?>x</span> 
                             <?= htmlspecialchars($item['food_name']); ?>
                         </span>
                         <span class="font-bold text-slate-400">฿<?= number_format($item['price'] * $item['quantity'], 2); ?></span>
@@ -131,26 +167,26 @@ try {
                     <?php endforeach; ?>
                 </ul>
                 <div class="mt-6 pt-6 border-t border-dashed border-slate-100 flex justify-between items-center">
-                    <span class="text-xs font-bold text-slate-400 uppercase">ยอดรวมทั้งหมด</span>
-                    <span class="text-2xl font-black text-emerald-600">฿<?= number_format($job['net_price'], 2); ?></span>
+                    <span class="text-xs font-bold text-slate-400 uppercase">มูลค่าอาหารรวม</span>
+                    <span class="text-2xl font-black text-slate-800">฿<?= number_format($job['net_price'], 2); ?></span>
                 </div>
             </div>
         </div>
 
     </main>
 
-    <div class="fixed bottom-0 left-0 w-full bg-white/80 backdrop-blur-lg border-t border-slate-100 p-4 z-40">
+    <div class="fixed bottom-0 left-0 w-full bg-white/90 backdrop-blur-lg border-t border-slate-100 p-4 z-40">
         <div class="max-w-md mx-auto">
             <?php if ($job['status'] == 'delivering'): ?>
                 <form action="complete_job.php" method="GET" onsubmit="return confirm('ยืนยันว่าจัดส่งถึงมือลูกค้าเรียบร้อยแล้ว?')">
                     <input type="hidden" name="order_id" value="<?= $order_id ?>">
                     <button type="submit" class="w-full bg-emerald-500 text-white py-4 rounded-2xl font-black text-lg shadow-xl shadow-emerald-100 hover:bg-emerald-600 transition flex items-center justify-center gap-3 active:scale-95">
-                        <i class="bi bi-check2-all text-2xl"></i> ส่งอาหารสำเร็จแล้ว [3.4.9]
+                        <i class="bi bi-check2-all text-2xl"></i> ส่งอาหารสำเร็จแล้ว
                     </button>
                 </form>
             <?php else: ?>
-                <div class="w-full bg-slate-100 text-slate-400 py-4 rounded-2xl text-center font-bold">
-                    งานนี้เสร็จสิ้นแล้ว
+                <div class="w-full bg-slate-100 text-slate-400 py-4 rounded-2xl text-center font-bold flex items-center justify-center gap-2">
+                    <i class="bi bi-check-circle-fill"></i> งานนี้ส่งสำเร็จแล้ว
                 </div>
             <?php endif; ?>
         </div>

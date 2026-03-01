@@ -1,118 +1,31 @@
 <?php
 // ไฟล์: customer/checkout.php
 session_start();
+require_once '../config/database.php';
 
-// 1. ตรวจสอบสิทธิ์ว่าล็อกอินหรือยัง
+// 1. ตรวจสอบสิทธิ์ว่าล็อกอินหรือยัง และมีของในตะกร้าไหม
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'customer') {
     header("Location: ../login.php");
     exit();
 }
-
-require_once '../config/database.php';
-
-// 2. ตรวจสอบว่ามีตะกร้าสินค้าหรือไม่ ถ้าไม่มีให้กลับไปหน้าแรก
-if (empty($_SESSION['cart']) || !isset($_SESSION['cart_restaurant_id'])) {
-    header("Location: index.php");
+if (empty($_SESSION['cart'])) {
+    header("Location: cart.php");
     exit();
 }
 
-$user_id = $_SESSION['user_id'];
-$restaurant_id = $_SESSION['cart_restaurant_id'];
-$message = '';
+// 2. รับค่าที่ส่งมาจากหน้า cart.php
+$restaurant_id = $_POST['restaurant_id'] ?? $_SESSION['cart_restaurant_id'];
+$total_price = $_POST['total_price'] ?? 0;
+$discount_percent = $_POST['discount_percent'] ?? 0;
+$net_price = $_POST['net_price'] ?? 0;
 
-// 3. ดึงข้อมูลสินค้าในตะกร้าเพื่อคำนวณยอดรวมเตรียมแสดงผล/บันทึก
-$cart_items = [];
-$total_price = 0;
-$restaurant_name = '';
-
-$food_ids = implode(',', array_map('intval', array_keys($_SESSION['cart'])));
-
+// 3. ดึงข้อมูลลูกค้าเพื่อมาแสดงเป็นค่าเริ่มต้นในช่องเบอร์โทรศัพท์
 try {
-    // ดึงข้อมูลผู้ใช้งาน (สำหรับโชว์เบอร์โทรติดต่อ)
-    $stmt_user = $conn->prepare("SELECT first_name, last_name, phone FROM users WHERE user_id = :id");
-    $stmt_user->execute([':id' => $user_id]);
-    $user_info = $stmt_user->fetch(PDO::FETCH_ASSOC);
-
-    // ดึงข้อมูลอาหารจากตะกร้า
-    $sql = "SELECT f.*, r.restaurant_name 
-            FROM foods f 
-            JOIN restaurants r ON f.restaurant_id = r.restaurant_id 
-            WHERE f.food_id IN ($food_ids)";
-    $stmt = $conn->prepare($sql);
-    $stmt->execute();
-    $foods = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    foreach ($foods as $row) {
-        $row['quantity'] = $_SESSION['cart'][$row['food_id']];
-        $row['subtotal'] = $row['price'] * $row['quantity'];
-        $total_price += $row['subtotal'];
-        $cart_items[] = $row;
-        $restaurant_name = $row['restaurant_name'];
-    }
-    
-    // จำลองส่วนลดเป็น 0 (สามารถต่อยอดดึงส่วนลดจากร้านค้าได้ในอนาคต ข้อ 3.2.12)
-    $discount_percent = 0; 
-    $net_price = $total_price; 
-
+    $stmt_user = $conn->prepare("SELECT first_name, last_name, phone FROM users WHERE user_id = :uid");
+    $stmt_user->execute([':uid' => $_SESSION['user_id']]);
+    $user = $stmt_user->fetch(PDO::FETCH_ASSOC);
 } catch(PDOException $e) {
-    die("เกิดข้อผิดพลาดในการดึงข้อมูล: " . $e->getMessage());
-}
-
-// ---------------------------------------------------------
-// 4. บันทึกข้อมูลลงฐานข้อมูลเมื่อกด "ยืนยันการสั่งซื้อ"
-// ---------------------------------------------------------
-if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['confirm_order'])) {
-    try {
-        // เริ่มต้น Transaction (เพื่อความชัวร์ว่าข้อมูลต้องลงครบทุกตาราง)
-        $conn->beginTransaction();
-
-        // 4.1 บันทึกข้อมูลลงตาราง orders (บิลหลัก)
-        $stmt_order = $conn->prepare("
-            INSERT INTO orders (customer_id, restaurant_id, total_price, discount_percent, net_price, status) 
-            VALUES (:customer_id, :restaurant_id, :total_price, :discount, :net_price, 'pending')
-        ");
-        $stmt_order->execute([
-            ':customer_id' => $user_id,
-            ':restaurant_id' => $restaurant_id,
-            ':total_price' => $total_price,
-            ':discount' => $discount_percent,
-            ':net_price' => $net_price
-        ]);
-
-        // ดึง order_id ที่เพิ่งบันทึกไปเมื่อกี้
-        $last_order_id = $conn->lastInsertId();
-
-        // 4.2 บันทึกข้อมูลรายการอาหารลงตาราง order_details (บิลย่อย)
-        $stmt_detail = $conn->prepare("
-            INSERT INTO order_details (order_id, food_id, quantity, price) 
-            VALUES (:order_id, :food_id, :quantity, :price)
-        ");
-
-        foreach ($cart_items as $item) {
-            $stmt_detail->execute([
-                ':order_id' => $last_order_id,
-                ':food_id' => $item['food_id'],
-                ':quantity' => $item['quantity'],
-                ':price' => $item['price']
-            ]);
-        }
-
-        // ยืนยันการบันทึกข้อมูล (Commit)
-        $conn->commit();
-
-        // 4.3 ล้างตะกร้าสินค้า
-        $_SESSION['cart'] = [];
-        unset($_SESSION['cart_restaurant_id']);
-
-        // เด้งไปหน้าประวัติการสั่งซื้อ พร้อมโชว์แจ้งเตือนสำเร็จ
-        header("Location: history.php?success=1");
-        exit();
-
-    } catch(PDOException $e) {
-        // ถ้าระหว่างบันทึกมี Error ให้ยกเลิกการบันทึกทั้งหมด (Rollback)
-        $conn->rollBack();
-        $message = "<div class='alert alert-danger'><i class='bi bi-x-circle-fill me-2'></i> เกิดข้อผิดพลาดในการสั่งซื้อ: " . $e->getMessage() . "</div>";
-    }
+    die("Error: " . $e->getMessage());
 }
 ?>
 
@@ -121,107 +34,203 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['confirm_order'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ยืนยันการสั่งซื้อ | FoodDelivery</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+    <title>ชำระเงิน | FoodExpress</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8f9fa; }
-        .text-brand { color: #ff6b6b !important; }
-        .bg-brand { background-color: #ff6b6b !important; }
-        .btn-brand { background-color: #ff6b6b; border-color: #ff6b6b; color: white; }
-        .btn-brand:hover { background-color: #ff5252; color: white; }
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Prompt', 'sans-serif'] },
+                    colors: { brand: { primary: '#f1416c', secondary: '#ff5c00' } }
+                }
+            }
+        }
         
-        .checkout-card { border: none; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.05); }
-        .order-item-img { width: 60px; height: 60px; object-fit: cover; border-radius: 10px; }
+        // ฟังก์ชันสลับการแสดงผล QR Code / ฟอร์มบัตรเครดิต
+        function togglePaymentView(method) {
+            document.getElementById('qr_code_section').classList.add('hidden');
+            document.getElementById('credit_card_section').classList.add('hidden');
+            
+            if (method === 'promptpay') {
+                document.getElementById('qr_code_section').classList.remove('hidden');
+            } else if (method === 'credit_card') {
+                document.getElementById('credit_card_section').classList.remove('hidden');
+            }
+        }
+    </script>
+    <style>
+        body { background-color: #f8fafc; }
+        .glass-card { background: rgba(255, 255, 255, 0.95); border: 1px solid rgba(255, 255, 255, 0.2); }
+        /* สไตล์ปุ่มแบบ Pop Cafe (รูปทรงแคปซูลยา) */
+        .btn-pill {
+            background-color: white;
+            color: #333;
+            border-radius: 50px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+            border: 1px solid #f1f5f9;
+        }
+        .btn-pill:hover {
+            box-shadow: 0 15px 35px rgba(241, 65, 108, 0.15);
+            border-color: #f1416c;
+            color: #f1416c;
+        }
     </style>
 </head>
-<body>
+<body class="font-sans text-slate-800 pb-24">
 
-<nav class="navbar navbar-expand-lg navbar-light bg-white sticky-top py-3 shadow-sm">
-    <div class="container">
-        <a class="navbar-brand text-brand fw-bold" href="index.php"><i class="bi bi-shop me-2"></i>FoodDelivery</a>
-        <a href="cart.php" class="btn btn-outline-secondary btn-sm rounded-pill px-3">
-            <i class="bi bi-arrow-left me-1"></i> กลับไปแก้ไขตะกร้า
-        </a>
-    </div>
-</nav>
+    <nav class="bg-white shadow-sm sticky top-0 z-30">
+        <div class="max-w-5xl mx-auto px-4 py-4 flex items-center gap-4">
+            <a href="cart.php" class="text-slate-400 hover:text-brand-primary transition text-2xl"><i class="bi bi-arrow-left-circle-fill"></i></a>
+            <h1 class="font-bold text-xl text-slate-700">ยืนยันการสั่งซื้อ</h1>
+        </div>
+    </nav>
 
-<div class="container mt-5 mb-5">
-    
-    <?= $message; ?>
+    <div class="max-w-5xl mx-auto px-4 mt-8 animate__animated animate__fadeInUp">
+        <form action="confirm_order.php" method="POST">
+            
+            <input type="hidden" name="restaurant_id" value="<?= $restaurant_id ?>">
+            <input type="hidden" name="total_price" value="<?= $total_price ?>">
+            <input type="hidden" name="discount_percent" value="<?= $discount_percent ?>">
+            <input type="hidden" name="net_price" value="<?= $net_price ?>">
 
-    <div class="row justify-content-center">
-        <div class="col-lg-8">
-            <div class="card checkout-card">
-                <div class="card-header bg-white border-bottom-0 pt-4 pb-2 text-center">
-                    <h4 class="fw-bold"><i class="bi bi-check2-circle text-success me-2"></i> ยืนยันการสั่งซื้อ</h4>
-                    <p class="text-muted mb-0">โปรดตรวจสอบรายการอาหารและข้อมูลติดต่อของคุณให้ถูกต้อง</p>
-                </div>
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 
-                <div class="card-body p-4 p-md-5 pt-3">
+                <div class="lg:col-span-2 space-y-8">
                     
-                    <div class="bg-light p-4 rounded-4 mb-4 border border-light">
-                        <h6 class="fw-bold mb-3"><i class="bi bi-person-lines-fill text-brand me-2"></i> ข้อมูลผู้ติดต่อ (สำหรับ Rider)</h6>
-                        <div class="row g-3">
-                            <div class="col-sm-6">
-                                <p class="mb-1 text-muted small">ชื่อ-นามสกุล</p>
-                                <p class="fw-bold mb-0"><?= htmlspecialchars($user_info['first_name'] . ' ' . $user_info['last_name']); ?></p>
+                    <div class="glass-card p-6 md:p-8 rounded-[2rem] shadow-sm">
+                        <h2 class="text-xl font-bold mb-6 flex items-center gap-3">
+                            <div class="bg-brand-primary/10 p-2 rounded-xl text-brand-primary"><i class="bi bi-geo-alt-fill"></i></div>
+                            รายละเอียดการจัดส่ง
+                        </h2>
+                        
+                        <div class="space-y-5">
+                            <div>
+                                <label class="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">เบอร์ติดต่อผู้รับ</label>
+                                <input type="text" name="delivery_phone" value="<?= htmlspecialchars($user['phone'] ?? '') ?>" 
+                                       class="w-full px-5 py-4 bg-slate-50 border-2 border-transparent rounded-2xl focus:outline-none focus:bg-white focus:border-brand-primary transition-all font-bold text-slate-700" required>
                             </div>
-                            <div class="col-sm-6">
-                                <p class="mb-1 text-muted small">เบอร์โทรศัพท์ (จำเป็น)</p>
-                                <p class="fw-bold mb-0 text-danger fs-5"><?= htmlspecialchars($user_info['phone']); ?></p>
+                            <div>
+                                <label class="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">ที่อยู่จัดส่ง (ระบุให้ชัดเจน)</label>
+                                <textarea name="delivery_address" rows="3" 
+                                          class="w-full px-5 py-4 bg-slate-50 border-2 border-transparent rounded-2xl focus:outline-none focus:bg-white focus:border-brand-primary transition-all font-bold text-slate-700" 
+                                          placeholder="เช่น บ้านเลขที่ 123 หมู่ 4 ซอย... จุดสังเกต..." required></textarea>
                             </div>
                         </div>
                     </div>
 
-                    <h6 class="fw-bold mb-3"><i class="bi bi-bag-check text-brand me-2"></i> สรุปรายการอาหารร้าน <span class="text-brand"><?= htmlspecialchars($restaurant_name); ?></span></h6>
-                    
-                    <ul class="list-group list-group-flush mb-4 border-top border-bottom">
-                        <?php foreach($cart_items as $item): ?>
-                            <li class="list-group-item py-3 px-0 d-flex justify-content-between align-items-center bg-transparent border-light">
-                                <div class="d-flex align-items-center">
-                                    <span class="badge bg-secondary rounded-pill me-3"><?= $item['quantity']; ?>x</span>
+                    <div class="glass-card p-6 md:p-8 rounded-[2rem] shadow-sm">
+                        <h2 class="text-xl font-bold mb-6 flex items-center gap-3">
+                            <div class="bg-emerald-500/10 p-2 rounded-xl text-emerald-500"><i class="bi bi-wallet2"></i></div>
+                            เลือกวิธีชำระเงิน
+                        </h2>
+                        
+                        <div class="space-y-4">
+                            <label class="relative block cursor-pointer group">
+                                <input type="radio" name="payment_method" value="cash" class="peer sr-only" onchange="togglePaymentView('cash')" checked>
+                                <div class="p-5 rounded-2xl border-2 border-slate-100 peer-checked:border-brand-primary peer-checked:bg-brand-primary/5 transition-all flex items-center gap-4">
+                                    <div class="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-xl"><i class="bi bi-cash-stack"></i></div>
+                                    <div class="flex-1">
+                                        <h3 class="font-bold text-slate-800 text-lg">เงินสดปลายทาง (Cash)</h3>
+                                        <p class="text-sm text-slate-500">ชำระเงินกับไรเดอร์เมื่อได้รับอาหาร</p>
+                                    </div>
+                                    <i class="bi bi-check-circle-fill text-2xl text-brand-primary opacity-0 peer-checked:opacity-100 transition-opacity"></i>
+                                </div>
+                            </label>
+
+                            <label class="relative block cursor-pointer group">
+                                <input type="radio" name="payment_method" value="promptpay" class="peer sr-only" onchange="togglePaymentView('promptpay')">
+                                <div class="p-5 rounded-2xl border-2 border-slate-100 peer-checked:border-brand-primary peer-checked:bg-brand-primary/5 transition-all flex items-center gap-4">
+                                    <div class="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xl"><i class="bi bi-qr-code-scan"></i></div>
+                                    <div class="flex-1">
+                                        <h3 class="font-bold text-slate-800 text-lg">สแกนจ่าย (PromptPay)</h3>
+                                        <p class="text-sm text-slate-500">รองรับแอปธนาคารทุกแอป</p>
+                                    </div>
+                                    <i class="bi bi-check-circle-fill text-2xl text-brand-primary opacity-0 peer-checked:opacity-100 transition-opacity"></i>
+                                </div>
+                            </label>
+                            
+                            <div id="qr_code_section" class="hidden mt-4 p-6 bg-slate-50 rounded-[1.5rem] border border-slate-200 text-center animate__animated animate__fadeIn">
+                                <p class="font-bold text-slate-700 mb-2">สแกนเพื่อชำระเงิน</p>
+                                <p class="text-brand-primary font-black text-2xl mb-4">฿<?= number_format($net_price, 2) ?></p>
+                                <img src="https://upload.wikimedia.org/wikipedia/commons/d/d0/QR_code_for_mobile_English_Wikipedia.svg" alt="QR" class="w-48 h-48 mx-auto rounded-xl shadow-md bg-white p-2 mb-4">
+                                <p class="text-xs text-slate-400"><i class="bi bi-info-circle"></i> ระบบจำลองการชำระเงิน สำหรับโปรเจกต์เท่านั้น</p>
+                            </div>
+
+                            <label class="relative block cursor-pointer group">
+                                <input type="radio" name="payment_method" value="credit_card" class="peer sr-only" onchange="togglePaymentView('credit_card')">
+                                <div class="p-5 rounded-2xl border-2 border-slate-100 peer-checked:border-brand-primary peer-checked:bg-brand-primary/5 transition-all flex items-center gap-4">
+                                    <div class="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-xl"><i class="bi bi-credit-card-2-front"></i></div>
+                                    <div class="flex-1">
+                                        <h3 class="font-bold text-slate-800 text-lg">บัตรเครดิต / เดบิต</h3>
+                                        <p class="text-sm text-slate-500">Visa, Mastercard, JCB</p>
+                                    </div>
+                                    <i class="bi bi-check-circle-fill text-2xl text-brand-primary opacity-0 peer-checked:opacity-100 transition-opacity"></i>
+                                </div>
+                            </label>
+
+                            <div id="credit_card_section" class="hidden mt-4 p-6 bg-slate-50 rounded-[1.5rem] border border-slate-200 space-y-4 animate__animated animate__fadeIn">
+                                <div>
+                                    <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">หมายเลขบัตร</label>
+                                    <input type="text" placeholder="0000 0000 0000 0000" class="w-full px-4 py-3 bg-white rounded-xl border border-slate-200 focus:outline-none focus:border-brand-primary font-mono text-slate-700">
+                                </div>
+                                <div class="grid grid-cols-2 gap-4">
                                     <div>
-                                        <h6 class="mb-0 fw-bold"><?= htmlspecialchars($item['food_name']); ?></h6>
-                                        <small class="text-muted">@ ฿<?= number_format($item['price'], 2); ?></small>
+                                        <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">วันหมดอายุ</label>
+                                        <input type="text" placeholder="MM/YY" class="w-full px-4 py-3 bg-white rounded-xl border border-slate-200 focus:outline-none focus:border-brand-primary font-mono text-slate-700">
+                                    </div>
+                                    <div>
+                                        <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">CVV</label>
+                                        <input type="text" placeholder="123" class="w-full px-4 py-3 bg-white rounded-xl border border-slate-200 focus:outline-none focus:border-brand-primary font-mono text-slate-700">
                                     </div>
                                 </div>
-                                <span class="fw-bold text-dark">฿<?= number_format($item['subtotal'], 2); ?></span>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
+                            </div>
 
-                    <div class="px-3">
-                        <div class="d-flex justify-content-between mb-2">
-                            <span class="text-muted">ยอดรวมค่าอาหาร</span>
-                            <span>฿<?= number_format($total_price, 2); ?></span>
-                        </div>
-                        <div class="d-flex justify-content-between mb-2">
-                            <span class="text-muted">ค่าจัดส่ง</span>
-                            <span class="text-success">ฟรี (โปรโมชั่น)</span>
-                        </div>
-                        <div class="d-flex justify-content-between mt-3 pt-3 border-top">
-                            <span class="fw-bold fs-5">ยอดที่ต้องชำระ (เงินสด)</span>
-                            <span class="fw-bold fs-4 text-brand">฿<?= number_format($net_price, 2); ?></span>
                         </div>
                     </div>
+                </div>
 
-                    <form action="checkout.php" method="POST" class="mt-5">
-                        <div class="d-grid gap-2">
-                            <button type="submit" name="confirm_order" class="btn btn-brand btn-lg rounded-pill fw-bold shadow-sm">
-                                ยืนยันการสั่งซื้อและรอรับอาหาร
-                            </button>
-                            <a href="cart.php" class="btn btn-light rounded-pill text-muted mt-2">ขอยกเลิกและแก้ไขตะกร้า</a>
+                <div class="lg:col-span-1">
+                    <div class="glass-card p-6 md:p-8 rounded-[2rem] shadow-xl sticky top-24">
+                        <h2 class="text-xl font-bold mb-6 text-slate-800">ยอดชำระเงิน</h2>
+                        
+                        <div class="space-y-3 text-slate-500 mb-6 font-medium">
+                            <div class="flex justify-between">
+                                <span>ยอดรวมอาหาร</span>
+                                <span>฿<?= number_format($total_price, 2) ?></span>
+                            </div>
+                            <?php if($discount_percent > 0): ?>
+                            <div class="flex justify-between text-brand-primary">
+                                <span>ส่วนลด (<?= $discount_percent ?>%)</span>
+                                <span>- ฿<?= number_format(($total_price * $discount_percent) / 100, 2) ?></span>
+                            </div>
+                            <?php endif; ?>
+                            <div class="flex justify-between text-emerald-500">
+                                <span>ค่าจัดส่ง</span>
+                                <span>ฟรี</span>
+                            </div>
                         </div>
-                    </form>
 
+                        <div class="flex justify-between items-center mb-8 pt-6 border-t-2 border-dashed border-slate-200">
+                            <span class="text-lg font-black text-slate-800">ราคาสุทธิ</span>
+                            <span class="text-4xl font-black text-brand-primary tracking-tighter">฿<?= number_format($net_price, 2) ?></span>
+                        </div>
+
+                        <button type="submit" name="confirm_payment" class="btn-pill w-full py-5 text-lg font-black flex items-center justify-center gap-2 transition-all">
+                            สั่งซื้อเลย <i class="bi bi-arrow-right-circle-fill text-2xl"></i>
+                        </button>
+                        
+                        <div class="mt-6 flex items-center justify-center gap-2 text-xs text-slate-400 font-bold uppercase tracking-widest">
+                            <i class="bi bi-shield-lock-fill text-brand-primary"></i> ปลอดภัย 100%
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
+        </form>
     </div>
-</div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
